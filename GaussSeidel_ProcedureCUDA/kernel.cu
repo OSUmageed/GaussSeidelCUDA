@@ -4,6 +4,8 @@
 
 #include <stdio.h>
 #include <cmath>
+#include <cuda.h>
+#include <stdlib.h>
 
 #define LENX      5.
 #define LENY      2.
@@ -22,7 +24,7 @@ struct BoundaryTemperature
 };
 
 // Instead of writing this over and over again.  Is this a leak?
-void *cornerSource (int BC1, int BC2, double coeff, double *source)
+__device__ void *cornerSource (int BC1, int BC2, double coeff, double *source)
 {
     if (BC1>0)
     {
@@ -50,7 +52,7 @@ void *cornerSource (int BC1, int BC2, double coeff, double *source)
 }
 
 // I think we're going to return the number of iterations it took rather than the result which I guess would be read out.
-int gaussSeidel_RB (double A, BoundaryTemperature BC, double guess, int rw, int cl)
+__global__ int gaussSeidel_RB (double A, BoundaryTemperature BC, double guess, int rw, int cl)
 {
     // Initialize array of guesses.
     double t_matrix_initial[rw][cl];
@@ -255,6 +257,10 @@ int main()
     // Get Guess for slab temperature
     cout << "Provide a guess Temperature for the slab in Kelvin:\n";
     cin >> guess;
+
+	// Initialize the CUDA part
+	dim3 grid(rw,cl);
+
 
     double wall0 = clock();
     gaussSeidel_RB(A, bound_cond, guess, rw, cl);
