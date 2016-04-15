@@ -342,10 +342,11 @@ int main()
 	cudaMemcpy(d_black, &black, sizeof(black), cudaMemcpyHostToDevice);
 
     double wall0 = clock();
-    gaussSeidel_RB<<<rw,cl>>>(d_red,d_black);
 
-	cudaMemcpy(red,&red_matrix_final,cudaMemcpyDeviceToHost);
-	cudaMemcpy(black,&black_matrix_final,cudaMemcpyDeviceToHost);
+    gaussSeidel_RB<<<rw,cl>>>(d_red,d_black);
+	cudaMemcpy(&red,red_matrix_final,sizeof(red),cudaMemcpyDeviceToHost);
+	cudaMemcpy(&black,black_matrix_final,sizeof(black),cudaMemcpyDeviceToHost);
+
     double wall1 = clock();
     double timed = (wall1-wall0)/double(CLOCKS_PER_SEC);
 
