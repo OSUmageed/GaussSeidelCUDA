@@ -30,7 +30,7 @@ __constant__ double d_ds;
 __constant__ double d_coeff;
 __constant__ double d_numel;
 
-__device__ void *cornerSource (int BC1, int BC2, double *source)
+__device__ void cornerSource (int BC1, int BC2, double *source)
 {
     if (BC1>0)
     {
@@ -57,30 +57,33 @@ __device__ void *cornerSource (int BC1, int BC2, double *source)
     }
 }
 
-__device__ void differencingOperation(double *active_half, double *passive_half, int active_index, int turn)
+__device__ void differencingOperation(double active_half[][DIVISIONS], double passive_half[][DIVISIONS], int ind_x, int ind_y, int turn)
 {
 	
     double d_coeff_p;
     double *source = new double[2];
 	// Negative seq means active half starts second.  Positive seq means active half starts first.
-	int seq = pow(-1,turn+blockIdx.x);
+	int seq = powf(-1,turn+ind_y);
 
+	// This is to catch indices outside the bounds.
+	if (ind_x < DIVISIONS/2 && ind_y < DIVISIONS)
+	{
 	// If bottom row.
-	if (active_index < blockDim.x)
+	if (ind_y == 0)
 	{
 		// If bottom left (SouthWest) corner and red.
-		if (active_index == 0 && turn == 1)
+		if (ind_x == 0 && turn == 1)
 		{
 			cornerSource(d_bc[2],d_bc[3], source);
-			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[active_index]+passive_half[blockDim.x])+source[0])/d_coeff_p;	
+			d_coeff_p = 2*d_coeff-source[1];	
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y] + passive_half[ind_x][ind_y+1])+source[0])/d_coeff_p;
 		}
 		// If bottom right (SouthEast) corner and black.
-		else if (active_index == (blockDim.x-1) && turn == 2)
+		else if (ind_x == (DIVISIONS/2-1) && turn == 2)
 		{
 			cornerSource(d_bc[2],d_bc[1], source);
 			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[active_index]+passive_half[active_index+blockDim.x])+source[0])/d_coeff_p;
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y] + passive_half[ind_x][ind_y+1])+source[0])/d_coeff_p;
 		}
 		// Bottom row no corner.
 		else
@@ -91,225 +94,181 @@ __device__ void differencingOperation(double *active_half, double *passive_half,
 				source[0] = 2*d_coeff*d_bc[2];
 				source[1] = -2*d_coeff;
 				d_coeff_p = 3*d_coeff-source[1];
-				active_half[active_index] = d_coeff*(passive_half[active_index]+passive_half[active_index+seq]+passive_half[active_index+blockDim.x])/d_coeff_p;
+				active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y+1]+passive_half[ind_x+seq][ind_y])+source[0])/d_coeff_p;
 			}
 			else
 			{
 				d_coeff_p = 3*d_coeff;
-				active_half[active_index] = d_coeff*(passive_half[active_index]+passive_half[active_index+seq]+passive_half[active_index+blockDim.x])/d_coeff_p;
+				active_half[ind_x][ind_y] = d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y+1]+passive_half[ind_x+seq][ind_y])/d_coeff_p;
 
 			}
 		}
 	}
+
 	// If top row
-	else if (active_index > d_numel-blockDim.x)
+	else if (ind_y == DIVISIONS-1)
 	{
 		// If top right (NorthEast) corner and red.
-		if (active_index == (d_numel-1) && turn == 1)
+		if (ind_x == (DIVISIONS/2-1) && turn == 1)
 		{
 			cornerSource(d_bc[0],d_bc[1], source);
 			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[active_index]+passive_half[active_index-blockDim.x])+source[0])/d_coeff_p;	
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y] + passive_half[ind_x][ind_y-1])+source[0])/d_coeff_p;	
 		}
 		// If top left (NorthWest) corner and black.
-		else if (active_index == (d_numel-(blockDim.x-1)) && turn == 2)
+		else if (ind_x == 0 && turn == 2)
 		{
 			cornerSource(d_bc[0],d_bc[3], source);
 			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[active_index]+passive_half[active_index+blockDim.x])+source[0])/d_coeff_p;
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y] + passive_half[ind_x][ind_y-1])+source[0])/d_coeff_p;
 		}
-		// Top row no corner.
+		// Top row no corner.  The top row is the compliment of the bottom row so the operation for seq is reversed.
 		else
 		{
-			// Check South Boundary Condition.  If it's constant temperature:
-			if (d_bc[2]>0)
-			{
-				source[0] = 2*d_coeff*d_bc[2];
-				source[1] = -2*d_coeff;
-				d_coeff_p = 3*d_coeff-source[1];
-				active_half[active_index] = d_coeff*(passive_half[active_index]+passive_half[active_index+seq]+passive_half[active_index+blockDim.x])/d_coeff_p;
-			}
-			else
-			{
-				d_coeff_p = 3*d_coeff;
-				active_half[active_index] = d_coeff*(passive_half[active_index]+passive_half[active_index+seq]+passive_half[active_index+blockDim.x])/d_coeff_p;
-
-			}
-		}
-	}
-	// Check side walls.
-	else if (j == 0)
-	{
-		if (i == (rw-1))
-		{
-			cornerSource(d_bc[0],d_bc[3], source);
-			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[i-1][j] + passive_half[i][j+1])+source[0])/d_coeff_p;
-		}
-		else
-		{
-			if (d_bc[3]>0)
-			{
-				source[0] = 2*d_coeff*d_bc[3];
-				source[1] = -2*d_coeff;
-				d_coeff_p = 3*d_coeff-source[1];
-				active_half[active_index] = (d_coeff*(passive_half[i-1][j] + passive_half[i+1][j] + passive_half[i][j+1])+source[0])/d_coeff_p;
-			}
-			else
-			{
-				d_coeff_p = 3*d_coeff;
-				active_half[active_index] = d_coeff*(passive_half[i+1][j]+passive_half[i-1][j]+passive_half[i][j+1])/d_coeff_p;
-
-			}
-		}
-	}
-	else if (i == (rw-1))
-	{
-		if (j == (cl-1))
-		{
-			cornerSource(d_bc[0], d_bc[1], source);
-			d_coeff_p = 2*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[i-1][j]+passive_half[i][j-1])+source[0])/d_coeff_p;
-
-		}
-		else
-		{
+			// Check North Boundary Condition.  If it's constant temperature:
 			if (d_bc[0]>0)
 			{
 				source[0] = 2*d_coeff*d_bc[0];
 				source[1] = -2*d_coeff;
 				d_coeff_p = 3*d_coeff-source[1];
-				active_half[active_index] = (d_coeff*(passive_half[i-1][j]+passive_half[i][j-1]+passive_half[i][j+1])+source[0])/d_coeff_p;
+				active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y-1]+passive_half[ind_x-seq][ind_y])+source[0])/d_coeff_p;
 			}
 			else
 			{
 				d_coeff_p = 3*d_coeff;
-				active_half[active_index] = d_coeff*(passive_half[i-1][j]+passive_half[i][j-1]+passive_half[i][j+1])/d_coeff_p;
-
+				active_half[ind_x][ind_y] = d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y-1]+passive_half[ind_x-seq][ind_y])/d_coeff_p;
 			}
 		}
 	}
-	else if (j == (cl-1))
+	// Check side walls.  This is West when the matrix starts the row, that's when seq is -1.
+	else if (ind_x == 0 && seq == -1)
+	{
+		if (d_bc[3]>0)
+		{
+			source[0] = 2*d_coeff*d_bc[3];
+			source[1] = -2*d_coeff;
+			d_coeff_p = 3*d_coeff-source[1];
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y]+ passive_half[ind_x][ind_y+1] + passive_half[ind_x][ind_y-1])+source[0])/d_coeff_p;
+		}
+		else
+		{
+			d_coeff_p = 3*d_coeff;
+			active_half[ind_x][ind_y] = d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y+1]+passive_half[ind_x][ind_y-1])/d_coeff_p;
+
+		}
+	}
+	
+	// This is East when the matrix ends the row.
+	else if (ind_x == (DIVISIONS/2-1) && seq == 1)
 	{
 		if (d_bc[1]>0)
 		{
 			source[0] = 2*d_coeff*d_bc[1];
 			source[1] = -2*d_coeff;
 			d_coeff_p = 3*d_coeff-source[1];
-			active_half[active_index] = (d_coeff*(passive_half[i-1][j]+passive_half[i+1][j]+passive_half[i][j-1])+source[0])/d_coeff_p;
+			active_half[ind_x][ind_y] = (d_coeff*(passive_half[ind_x][ind_y]+ passive_half[ind_x][ind_y+1] + passive_half[ind_x][ind_y-1])+source[0])/d_coeff_p;
 		}
 		else
 		{
 			d_coeff_p = 3*d_coeff;
-			active_half[active_index] = d_coeff*(passive_half[i-1][j]+passive_half[i+1][j]+passive_half[i][j-1])/d_coeff_p;
-
+			active_half[ind_x][ind_y] = d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y+1]+passive_half[ind_x][ind_y-1])/d_coeff_p;
 		}
 	}
+	// Every cell not on an edge or corner.
 	else
 	{
 		d_coeff_p = 4*d_coeff;
-		active_half[active_index] = d_coeff*(passive_half[i-1][j]+passive_half[i+1][j]+passive_half[i][j-1]+passive_half[i][j+1])/d_coeff_p;
+		active_half[ind_x][ind_y] = d_coeff*(passive_half[ind_x][ind_y]+passive_half[ind_x][ind_y+1]+passive_half[ind_x][ind_y-1]+passive_half[ind_x+seq][ind_y])/d_coeff_p;
 	}
-
+	}
 }
 
 
-__global__ void gaussSeidel_RB (double *red_matrix_initial, double *black_matrix_initial)
+__global__ void gaussSeidel_RB (double red_matrix_initial[][DIVISIONS], double black_matrix_initial[][DIVISIONS], double red_matrix_final[][DIVISIONS], double black_matrix_final[][DIVISIONS])
 {
 
     // Initialize array of guesses.
     double diff_matrix;
-	double *red_matrix_final;
-	double *black_matrix_final;
-    int iter = 0;
+	bool stop = true;
+    // int iter = 0;
 
     // Initialize matrices.
-	int indx = blockIdx.x * blockDim.x + threadIdx.x;
+	int ind_x = blockIdx.x * blockDim.x + threadIdx.x;
+	int ind_y = blockIdx.y * blockDim.y + threadIdx.y;
 
-	cudaMemcpy(red_matrix_final,red_matrix_initial,sizeof(red_matrix_initial),cudaMemcpyDeviceToDevice);
-	cudaMemcpy(black_matrix_final,black_matrix_initial,sizeof(black_matrix_initial),cudaMemcpyDeviceToDevice);
+	if (ind_x < DIVISIONS/2 && ind_y < DIVISIONS)
+	{
+		red_matrix_initial[ind_x][ind_y] = d_guess;
+		red_matrix_final[ind_x][ind_y] = d_guess;
+		black_matrix_initial[ind_x][ind_y] = d_guess;
+		black_matrix_final[ind_x][ind_y] = d_guess;
+	}
 
-    while (true)
+	__syncthreads();
+
+    while (stop)
     {
 
 		// Lets say red is in position (0,0).
-        differencingOperation(red_matrix_final, black_matrix_final,indx,1);
+        differencingOperation(red_matrix_final, black_matrix_final,ind_x,ind_y,1);
 		__syncthreads();
-		differencingOperation(black_matrix_final, red_matrix_final,indx,2);
+		differencingOperation(black_matrix_final, red_matrix_final,ind_x,ind_y,2);
 		__syncthreads();
 
         // Get the absolute value of the difference.
 
         diff_matrix = 0;
-        for (int k = 0; k < d_numel; k++)
-        {
-
-            diff_matrix += abs(red_matrix_initial[k] - red_matrix_final[k]) + abs(black_matrix_initial[k] - black_matrix_final[k]);
-
-        }
-
-        iter++;
-
-        if ((diff_matrix / (d_numel*2)) < TOLERANCE)
-        {
-            printf("The solution converges after %.d iterations.\n",iter);
-
-            // Write out matrix to text to read into a sensible language for plotting.
-            // Write out the slab dimensions and the Temperatures in 1-D, it'll make it easy to reshape the matrix.
-        //    ofstream filewrite;
-        //    filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCPP\\GS_output.txt", ios::trunc);
-        //    filewrite << LENX << "\n" << LENY << "\n" << DS;
-
-        //    for (int k = 0; k < rw; k++)
-        //    {
-        //        for (int n = 0; n < cl; n++)
-        //        {
-        //            filewrite << "\n" << t_matrix_final[k][n];
-        //        }
-        //    }
-
-        //    filewrite.close();
-        //    free(source);
-        //    
-        //}
-
-        // Make the initial the final.
-
-		// final to initial??
-		cudaMemcpy(red_matrix_initial,red_matrix_final,sizeof(red_matrix_initial),cudaMemcpyDeviceToDevice);
-		cudaMemcpy(black_matrix_initial,black_matrix_final,sizeof(black_matrix_initial),cudaMemcpyDeviceToDevice);
+		if (ind_x < DIVISIONS/2 && ind_y < DIVISIONS)
+		{
+			diff_matrix += abs(red_matrix_initial[ind_x][ind_y] - red_matrix_final[ind_x][ind_y]) + abs(black_matrix_initial[ind_x][ind_y] - black_matrix_final[ind_x][ind_y]);
+		}
 
 		__syncthreads();
 
-       /* for (int k = 0; k < rw; k++)
-		{
+        // iter++;
 
-			red_matrix_initial[k] = red_matrix_final[k];
-			black_matrix_initial[k] = black_matrix_final[k];
-            
-        }
-		*/
+        if ((diff_matrix / (d_numel*2)) < TOLERANCE)
+        {
+            //printf("The solution converges after %.d iterations.\n",iter);
+			stop = false;
+		}
+
+		//__syncthreads();
+		
+
     }
 }
 
-}
+
 
 int main()
 {
+	// Get device properties and set threads to be max thread size.  
+	// We need the threads to fit the matrix correctly so reject the program if they don't.
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties( &prop, 1 );
+	int thread = sqrt(prop.maxThreadsPerBlock);
+
+	if (DIVISIONS%(2*thread) != 0)
+	{
+		printf("Error: DIVISIONS must be a multiple of %.i.  That's twice the thread dimension.\n",(2*thread));
+		return 0;
+	}
 
     double ds = LENS/((double)(DIVISIONS-1));
     double A = DZ * ds;
     double guess;
 	double coeff = TH_COND * d_A / d_ds;
     double bound_cond[4];
-	const int numel = DIVISIONS*DIVISIONS/2;
-	double red[numel];
-    double black[numel];
+	const int x_dim = DIVISIONS/2;
+	double red[x_dim][DIVISIONS];
+    double black[x_dim][DIVISIONS];
+	int y_gr = DIVISIONS/thread;
+	int x_gr = y_gr/2;
 	double *d_red;
-	double *d_black;
-	int rw = DIVISIONS;
-	int cl = DIVISIONS/2;
-
+	double *d_red2;
+	double *d_black; 
+	double *d_black2;
 
     // Get initial conditions
     cout << "Provide Boundary conditions for each edge of the slab.\nEnter Constant Temperature in KELVIN\nor a negative number for an insulated boundary:\nNorth: \n";
@@ -325,39 +284,52 @@ int main()
     cout << "Provide a guess Temperature for the slab in Kelvin:\n";
     cin >> guess;
 
-	for (int k = 0; k<numel; k++)
-	{
-		red[k] = guess;
-		black[k] = guess;
-	}
-
 	// Put the constants in constant memory.
 	cudaMemcpyToSymbol( d_bc, bound_cond, sizeof(bound_cond));
 	cudaMemcpyToSymbol( &d_A, &A, sizeof(A));
+	cudaMemcpyToSymbol( &d_guess, &guess, sizeof(double));
 	cudaMemcpyToSymbol( &d_ds, &ds, sizeof(ds));
 	cudaMemcpyToSymbol( &d_coeff, &coeff, sizeof(coeff));
-	cudaMemcpyToSymbol( &d_numel, &numel, sizeof(numel));
 
 	// Copy the Initial arrays to the GPU.
-	cudaMemcpy(d_red, &red, sizeof(red), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_black, &black, sizeof(black), cudaMemcpyHostToDevice);
+	cudaMalloc((void **) &d_red, sizeof(red));
+	cudaMalloc((void **) &d_black, sizeof(black));
+	cudaMalloc((void **) &d_red2, sizeof(red));
+	cudaMalloc((void **) &d_black2, sizeof(black));
+
+	dim3 grids(x_gr,y_gr);
+	dim3 threads(thread,thread);
 
     double wall0 = clock();
 
-    gaussSeidel_RB<<<rw,cl>>>(d_red,d_black);
-	cudaMemcpy(&red,red_matrix_final,sizeof(red),cudaMemcpyDeviceToHost);
-	cudaMemcpy(&black,black_matrix_final,sizeof(black),cudaMemcpyDeviceToHost);
+    gaussSeidel_RB<<<grids,threads>>>((double(*) [DIVISIONS]) d_red,(double(*) [DIVISIONS]) d_black,(double(*) [DIVISIONS]) d_red2,(double(*) [DIVISIONS]) d_black2);
 
+	cudaMemcpy(&red,&d_red2,sizeof(red),cudaMemcpyDeviceToHost);
+	cudaMemcpy(&black,&d_black2,sizeof(red),cudaMemcpyDeviceToHost);
     double wall1 = clock();
     double timed = (wall1-wall0)/double(CLOCKS_PER_SEC);
 
     printf("That took %.3e seconds.\n",timed);
+	
+	// Write it out!
+	ofstream filewrite;
+	filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.txt", ios::trunc);
+	filewrite << DIVISIONS << "\n" << ds;
 
-	cudaFree(&d_A);
-	cudaFree(&d_ds);
-	cudaFree(&d_guess);
-	cudaFree(&d_bc);
-	cudaFree(&d_coeff);
+    for (int k = 0; k < x_dim; k++)
+    {
+        for (int n = 0; n < DIVISIONS; n++)
+        {
+            filewrite << "\n" << red[k][n] << "/n" << black[k][n];
+        }
+    }
+
+    filewrite.close();
+
+	cudaFree(d_red);
+	cudaFree(d_red2);
+	cudaFree(d_black);
+	cudaFree(d_black2);
 
     return 0;
 }
