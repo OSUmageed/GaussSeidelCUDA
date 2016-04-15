@@ -137,6 +137,7 @@ __device__ void differencingOperation(double *active_half, double *passive_half,
 			}
 		}
 	}
+	// Check side walls.
 	else if (j == 0)
 	{
 		if (i == (rw-1))
