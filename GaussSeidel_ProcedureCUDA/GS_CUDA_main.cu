@@ -30,8 +30,9 @@ using namespace std;
 #define DZ        .01
 #define DIVISIONS 256.
 #define TOLERANCE 1.e-5
-#define REAL double
+#define REAL float
 
+// Functor to find absolute value of difference between initial and final.
 struct absdiff
 {
     template <typename Tuple>
@@ -274,9 +275,9 @@ int main()
 	REAL guess = 600.;
 	
 	// Copy the Initial arrays to the GPU.
-	thrust::host_vector<REAL> d_red_i(sz,guess);
+	thrust::device_vector<REAL> d_red_i(sz,guess);
 	thrust::device_vector<REAL> d_red_f(sz,guess);
-	thrust::host_vector<REAL> d_black_i(sz,guess);
+	thrust::device_vector<REAL> d_black_i(sz,guess);
 	thrust::device_vector<REAL> d_black_f(sz,guess);
 	thrust::device_vector<REAL> diff_mat(sz);
 	thrust::device_vector<REAL> t_2 = temp_c;
@@ -287,15 +288,12 @@ int main()
 
 	dim3 grids(x_gr,y_gr);
 	dim3 threads(thread,thread);
-	thrust::device_vector<REAL> d_hvr(sz);
-	thrust::device_vector<REAL> d_hvb(sz);
 	bool stops = true;
 	int iter = 0;
 
 	while (stops)
 	{
-		d_hvr = d_red_i;
-		d_hvb = d_black_i;
+
 		differencingOperation <<< grids, threads >>> (red_cast, black_cast, d_const, 0);
 
 		printf("\nNumber One!\n");
@@ -306,8 +304,8 @@ int main()
 
 		cudaDeviceSynchronize();
 
-		thrust::for_each(thrust::make_zip_iterator(thrust::make_tuple(d_hvr.begin(), d_red_f.begin(), d_hvb.begin(), d_black_f.begin(), diff_mat.begin())),
-			thrust::make_zip_iterator(thrust::make_tuple(d_hvr.end(), d_red_f.end(), d_hvb.end(), d_black_f.end(), diff_mat.end())),
+		thrust::for_each(thrust::make_zip_iterator(thrust::make_tuple(d_red_i.begin(), d_red_f.begin(), d_black_i.begin(), d_black_f.begin(), diff_mat.begin())),
+			thrust::make_zip_iterator(thrust::make_tuple(d_red_i.end(), d_red_f.end(), d_black_i.end(), d_black_f.end(), diff_mat.end())),
 			absdiff());
 
 		printf("\nAnd the subtraction!\n");
@@ -366,6 +364,7 @@ int main()
 		cout << "The second copy finished!" << endl;
 		cout << d_black_i[0] << endl;
 		cout << d_black_i.size() << endl;
+
 		cudaDeviceSynchronize();
 	}
 
