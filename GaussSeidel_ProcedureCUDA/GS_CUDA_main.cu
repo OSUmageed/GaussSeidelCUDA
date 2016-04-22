@@ -7,18 +7,18 @@
 #include "cuda_runtime_api.h"
 #include "driver_types.h"
 
-#include <thrust\reduce.h>
-#include <thrust\execution_policy.h>
-#include <thrust\device_vector.h>
-#include <thrust\host_vector.h>
-#include <thrust\for_each.h>
-#include <thrust\transform.h>
-#include <thrust\iterator\zip_iterator.h>
-#include <thrust\copy.h>
+#include <thrust/reduce.h>
+#include <thrust/execution_policy.h>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/for_each.h>
+#include <thrust/transform.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/copy.h>
 
 #include <stdio.h>
 #include <cmath>
-#include <ctime>
+#include <time.h>
 #include <stdlib.h>
 #include <fstream>
 #include <iostream>
@@ -30,18 +30,9 @@ using namespace std;
 #define LENS       5.
 #define TH_COND   16.
 #define DZ        .01
-#define DIVISIONS 256.
-#define TOLERANCE 1.e-5
+#define DIVISIONS 1024.
+#define TOLERANCE 1.e-2
 #define REAL float
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
-{
-   if (code != cudaSuccess) 
-   {
-      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-      if (abort) exit(code);
-   }
-}
 
 struct absdiff
 {
@@ -49,14 +40,14 @@ struct absdiff
     __host__ __device__
     void operator()(Tuple t)
     {
-        // diffmat = (redi-redf)+blacki-blackf) 
+        // diffmat = (redi-redf)+blacki-blackf)
         thrust::get<4>(t) = fabsf(thrust::get<0>(t) - thrust::get<1>(t)) + fabsf(thrust::get<2>(t) - thrust::get<3>(t));
     }
 };
 
 __device__ void cornerSource (REAL BC1, REAL BC2, REAL *source, REAL coff)
 {
-	printf("Corner Source was called!\n");
+
     if (BC1>0)
     {
         if (BC2>0)
@@ -70,7 +61,7 @@ __device__ void cornerSource (REAL BC1, REAL BC2, REAL *source, REAL coff)
             source[1] = 2.0f * coff;
         }
     }
-	
+
     else if (BC2>0)
     {
         source[0] = 2.0f * coff * BC2;
@@ -80,7 +71,7 @@ __device__ void cornerSource (REAL BC1, REAL BC2, REAL *source, REAL coff)
     {
         source[0] = 0.0f;
         source[1] = 0.0f;
-		
+
     }
 
 }
@@ -107,8 +98,7 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		seq = 1;
 	}
 
-	//printf("Sequence:  id %d seq %d iy: %d s1: %d gridx: %d\n", id, seq, ind_y, grd);
-	//printf("Sequence:  id %d North: %.f East: %.f South: %.f West: %.f a: %.8f grid: %d \n",id, d_const[0],d_const[1],d_const[2],d_const[3], d_const[4], grd);
+
 	// If bottom row.
 	if (id < DIVISIONS*DIVISIONS*.5)
 	{
@@ -118,19 +108,15 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		if (ind_x == 0 && turn == 0)
 		{
 			cornerSource(d_const[2],d_const[3], source, d_const[4]);
-			d_coeff_p = 2.0f * d_const[4] + source[1];	
+			d_coeff_p = 2.0f * d_const[4] + source[1];
 			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id+grd])+source[0])/d_coeff_p;
-			printf("Southwest activeHalf is now %.4f.\n",active_half[id]);
-			printf("Coefficient is %.4f: \n",d_const[4]);
-			printf("Active node coefficient is %.4f: \n",d_coeff_p);
-			printf("Memory location : %p\n", &active_half);
-			printf("The x grid length is %d.\n",grd);
-			
+
+
 		}
 		// If bottom right (SouthEast) corner and black.
 		else if (ind_x == (grd-1) && turn == 1)
 		{
-			printf("\nSoutheast Happened.\n\n"); 
+
 			cornerSource(d_const[2],d_const[1], source, d_const[4]);
 			d_coeff_p = 2.0f * d_const[4] + source[1];
 			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id+grd])+source[0])/d_coeff_p;
@@ -160,26 +146,26 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		// If top right (NorthEast) corner and red.
 		if (ind_x == (grd-1) && turn == 0)
 		{
-			printf("\nNortheast Happened.\n\n"); 
+
 			cornerSource(d_const[0],d_const[1], source, d_const[4]);
 			d_coeff_p = 2.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id-grd])+source[0])/d_coeff_p;	
-			
+			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id-grd])+source[0])/d_coeff_p;
+
 		}
 		// If top left (NorthWest) corner and black.
 		else if (ind_x == 0 && turn == 1)
 		{
-			printf("\nNorthwest Happened.\n\n"); 
+
 			cornerSource(d_const[0],d_const[3], source, d_const[4]);
 			d_coeff_p = 2.0f * d_const[4] + source[1];
 			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id-grd])+source[0])/d_coeff_p;
-			
+
 
 		}
 		// Top row no corner.  The top row is the compliment of the bottom row so the operation for seq is reversed.
 		else
 		{
-			printf("North! %d ",seq);
+
 			// Check North Boundary Condition.  If it's constant temperature:
 			if (d_const[0]>0)
 			{
@@ -203,31 +189,28 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 
 			source[0] = 2.0f * d_const[4]*d_const[3];
 			source[1] = 2.0f * d_const[4];
-			d_coeff_p = 3.0f * d_const[4] + source[1];	
-			//printf("West");		
-			//printf("Coefficient is %.4f: \n",d_const[4]);
-			//printf("Active node coefficient is %.4f: \n",d_coeff_p);
+			d_coeff_p = 3.0f * d_const[4] + source[1];
 			active_half[id] = (d_const[4]*(passive_half[id]+ passive_half[id+grd] + passive_half[id-grd])+source[0])/d_coeff_p;
 
 
 		}
 		else
 		{
-				
+
 			d_coeff_p = 3.0f * d_const[4];
 			active_half[id] = d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id-grd])/d_coeff_p;
-			//printf("The active_half has a value %.5f at [%d][%d].\n",active_half[id],ind_x,ind_y);
-		
+
+
 
 		}
 	}
-	
+
 	// This is East when the matrix ends the row.
 	else if (ind_x == (grd-1) && seq == 1)
 	{
 		if (d_const[1]>0)
 		{
-			
+
 			source[0] = 2.0f * d_const[4]*d_const[1];
 			source[1] = 2.0f * d_const[4];
 			d_coeff_p = 3.0f * d_const[4] + source[1];
@@ -246,22 +229,22 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		active_half[id] = d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id-grd]+passive_half[id+seq])/d_coeff_p;
 	}
 	}
+	delete[] source;
+
 }
+
+
 
 int main()
 {
 
-	// Test copy vector.
-	cudaDeviceSynchronize();
-	//Test even odd
-
-	// Get device properties and set threads to be max thread size.  
+	// Get device properties and set threads to be max thread size.
 	// We need the threads to fit the matrix correctly so reject the program if they don't.
 	cudaDeviceProp prop;
 	cudaGetDeviceProperties( &prop, 0 );
 	int mt = prop.maxThreadsPerBlock;
 	int thread = int(sqrtf(float(mt)));
-	cout << "Number of threads" << thread << "\n";
+
 
 	if (int(DIVISIONS)%(2*thread) != 0)
 	{
@@ -270,17 +253,15 @@ int main()
 	}
 
 	int sz = int(DIVISIONS*DIVISIONS)/2;
-	int sz2 = sz+500;
-	thrust::host_vector<REAL> red(sz2);
-	thrust::host_vector<REAL> black(sz2);
+	thrust::host_vector<REAL> red(sz);
+	thrust::host_vector<REAL> black(sz);
 	thrust::host_vector<REAL> temp_c(5);
 	REAL ds = (REAL)LENS/((REAL)(DIVISIONS-1));
     REAL A = (REAL)DZ * ds;
 	const int y_gr = (int)DIVISIONS/thread;
 	const int x_gr = y_gr/2;
-	REAL dm2; 
-	cout << "The x grid dimension: " << x_gr << " The y grid dimension: " << y_gr << endl;
-	
+	REAL dm2;
+
     // Get initial conditions
  //   cout << "Provide Boundary conditions for each edge of the slab.\nEnter Constant Temperature in KELVIN\nor a negative number for an insulated boundary:\nNorth: \n";
 	//cin >> temp_c[0];
@@ -297,95 +278,76 @@ int main()
 
 	// For debugging:
 	temp_c[0] = 500.;
-	temp_c[1] = 740.;
-	temp_c[2] = 900.;
+	temp_c[1] = -9.;
+	temp_c[2] = 800.;
 	temp_c[3] = -9.;
 	temp_c[4] = (REAL)TH_COND * A / ds;
-	REAL guess = 600.;
-	
+	REAL guess = 650.;
+
 	// Copy the Initial arrays to the GPU.
 	thrust::device_vector<REAL> d_red_i(sz,guess);
 	thrust::device_vector<REAL> d_red_f(sz,guess);
 	thrust::device_vector<REAL> d_black_i(sz,guess);
 	thrust::device_vector<REAL> d_black_f(sz,guess);
-	thrust::device_vector<REAL> diff_mat(sz2);
+	thrust::device_vector<REAL> diff_mat(sz);
 	thrust::device_vector<REAL> t_2 = temp_c;
 
 
 	REAL *d_const = thrust::raw_pointer_cast(&t_2[0]);
 	REAL *red_cast = thrust::raw_pointer_cast(&d_red_f[0]);
 	REAL *black_cast = thrust::raw_pointer_cast(&d_black_f[0]);
-	REAL *red_casti = thrust::raw_pointer_cast(&d_red_i[0]);
-	REAL *black_casti = thrust::raw_pointer_cast(&d_black_i[0]);	
-	
+//	REAL *red_casti = thrust::raw_pointer_cast(&d_red_i[0]);
+//	REAL *black_casti = thrust::raw_pointer_cast(&d_black_i[0]);
+
 	dim3 grids(x_gr,y_gr);
 	dim3 threads(thread,thread);
 	bool stops = true;
 	int iter = 0;
+	double wall0 = clock();
 
 	while (stops)
 	{
 
-		cout << "The Pointer Addresses: " << endl;
-		cout << &red_cast << "  " << &black_cast << endl << endl;
-
 		differencingOperation <<< grids, threads >>> (red_cast, black_cast, d_const, 0);
-		gpuErrchk(cudaPeekAtLastError());
+
 		cudaDeviceSynchronize();
-		printf("\nNumber One!\n");
-		
+
 		differencingOperation <<< grids, threads >>> (black_cast, red_cast, d_const, 1);
-		gpuErrchk(cudaPeekAtLastError());
+
 		cudaDeviceSynchronize();
-		printf("\nNumber Two!\n");
 
 		thrust::for_each(thrust::make_zip_iterator(thrust::make_tuple(d_red_i.begin(), d_red_f.begin(), d_black_i.begin(), d_black_f.begin(), diff_mat.begin())),
 			thrust::make_zip_iterator(thrust::make_tuple(d_red_i.end(), d_red_f.end(), d_black_i.end(), d_black_f.end(), diff_mat.end())),
 			absdiff());
 
-		printf("\nAnd the subtraction!\n");
+
 		cudaDeviceSynchronize();
 
 		dm2 = thrust::reduce(diff_mat.begin(),diff_mat.end());
 
 		iter++;
-		printf("\nAnd the reduction!\n");
 
-		if ((dm2 /sz < TOLERANCE) || (iter>1e7))
+		if (((dm2 /REAL(sz*2)) < TOLERANCE) || (iter>1e7))
 		{
 			stops = false;
-		}	
+		}
 
-		cout << "Fifth brick red final: " << d_red_f[5] << " Fifth brick black final: " << d_black_f[5] << endl;
-		cout << "And the check!\n";
-		cout << "dm2 is " << dm2 << endl;
-		cout << "Diff Matrix First element is:  " << diff_mat[0] << endl;
-
-		//Hmm.  It doesn't look like they've changed.
-		//Yep.  Here's your problem.
-
-		// There should be three ways to do this.
-		// ITS A BUG!  I FOUND A BUG!!
 		//d_red_i = d_red_f;
-		//thrust::copy(d_red_f.begin(), d_red_f.end(), d_red_i.begin());
-		cudaDeviceSynchronize();
 
-		cudaMemcpy(red_casti, red_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice); 
-		
-		cout << endl << "The first copy finished!" << endl;
+		//cudaMemcpy(red_casti, red_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
+		thrust::copy(d_red_f.begin(), d_red_f.end(), d_red_i.begin());
 
 		//d_black_i = d_black_f;
-		//thrust::copy(d_black_f.begin(), d_black_f.end(), d_black_i.begin());
-		cudaMemcpy(black_casti, black_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
-		cout << "The second copy finished!" << endl;
-		cout << d_black_i[0] << endl << endl;
+
+		//cudaMemcpy(black_casti, black_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
+		thrust::copy(d_black_f.begin(), d_black_f.end(), d_black_i.begin());
 
 		cudaDeviceSynchronize();
-
+		if (iter%100 == 0) cout << "Iteration: " << iter << "dm:" << dm2/REAL(sz*2) << endl;
 		//Just to be super obnoxious.
 		//ofstream filewrite;
 		//filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.dat", ios::trunc);
-		//  
+		//
   //      for (int n = 0; n < (sz); n++)
   //      {
   //          filewrite << "\n" << d_red_f[n] << "\n" << d_black_i[n];
@@ -394,15 +356,17 @@ int main()
 
 	}
 
+    double wall1 = clock();
+    double timed = (wall1-wall0)/CLOCKS_PER_SEC;
+
 	printf("Outside the loop\n");
 
-	printf("It converged after %.f iterations: \n",iter);
-	
+	printf("It converged after %d iterations: \n",iter);
+
 	// Write it out!
 	/*ofstream filewrite;
 	filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.dat", ios::trunc);
 	filewrite << DIVISIONS << "\n" << ds;
-
     for (int k = 0; k < x_dim; k++)
     {
         for (int n = 0; n < DIVISIONS; n++)
