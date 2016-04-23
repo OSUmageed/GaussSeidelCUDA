@@ -7,14 +7,14 @@
 #include "cuda_runtime_api.h"
 #include "driver_types.h"
 
-#include <thrust/reduce.h>
-#include <thrust/execution_policy.h>
-#include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
-#include <thrust/for_each.h>
-#include <thrust/transform.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/copy.h>
+#include <thrust\reduce.h>
+#include <thrust\execution_policy.h>
+#include <thrust\device_vector.h>
+#include <thrust\host_vector.h>
+#include <thrust\for_each.h>
+#include <thrust\transform.h>
+#include <thrust\iterator\zip_iterator.h>
+#include <thrust\copy.h>
 
 #include <stdio.h>
 #include <cmath>
@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <fstream>
 #include <iostream>
-#include <typeinfo>
+#include <omp.h>
 
 using namespace std;
 
@@ -30,7 +30,7 @@ using namespace std;
 #define LENS       5.
 #define TH_COND   16.
 #define DZ        .01
-#define DIVISIONS 1024.
+#define DIVISIONS 256.
 #define TOLERANCE 1.e-2
 #define REAL float
 
@@ -45,50 +45,172 @@ struct absdiff
     }
 };
 
-__device__ void cornerSource (REAL BC1, REAL BC2, REAL *source, REAL coff)
+	
+REAL *cornerSource(REAL BC1, REAL BC2, REAL coff)
 {
+	REAL *sc;
+	sc = new REAL[2];
 
     if (BC1>0)
     {
         if (BC2>0)
         {
-            source[0] = 2.0f * coff * (BC1 + BC2);
-            source[1] = 4.0f * coff;
+            sc[0] = 2.0f * coff * (BC1 + BC2);
+            sc[1] = 4.0f * coff;
         }
         else
         {
-            source[0] = 2.0f * coff * BC1;
-            source[1] = 2.0f * coff;
+            sc[0] = 2.0f * coff * BC1;
+            sc[1] = 2.0f * coff;
         }
     }
 
     else if (BC2>0)
     {
-        source[0] = 2.0f * coff * BC2;
-        source[1] = 2.0f * coff;
+        sc[0] = 2.0f * coff * BC2;
+        sc[1] = 2.0f * coff;
     }
     else
     {
-        source[0] = 0.0f;
-        source[1] = 0.0f;
-
+        sc[0] = 0.0f;
+        sc[1] = 0.0f;
     }
-
+	return sc;
 }
 
-__global__ void differencingOperation(REAL *active_half, REAL *passive_half, REAL *d_const, const int turn)
+void coefficientFills(REAL *a_ext, REAL *a_int, REAL *temps, REAL a_base, const int turn)
+{
+	const int grdx = int(DIVISIONS/2);
+	const int ar_len = int(grdx*DIVISIONS);
+
+	//Well at least we get to call this with omp.
+	omp_set_num_threads( 8 );
+
+	#pragma omp parallel for default(none),private(sp,k),shared(grdx,a_int,a_ext,temps,a_base,turn,ar_len)
+	for (int k = 0; k < ar_len; k++)
+	{
+		if (k < grdx)
+		{
+			// If bottom left (SouthWest) corner and red.
+			if (k == 0 && turn == 0)
+			{
+				REAL *sp;
+				sp = new REAL[2];
+				sp = cornerSource(temps[2],temps[3], a_base);
+				a_ext[k] = sp[0];
+				a_int[k] = 2.0f * a_base + sp[1];
+				free(sp);
+			}
+			// If bottom right (SouthEast) corner and black.
+			else if (k == (grdx-1) && turn == 1)
+			{
+				REAL *sp;
+				sp = new REAL[2];
+				sp = cornerSource(temps[2],temps[1], a_base);
+				a_ext[k] = sp[0];
+				a_int[k] = 2.0f * a_base + sp[1];
+				free(sp);
+			}
+			// Bottom row no corner.
+			else
+			{
+			// Check South Boundary Condition.  If it's constant temperature:
+				if (temps[2] > 0)
+				{
+					a_ext[k] = 2.0f * a_base * temps[2];
+					a_int[k] = 5.0f * a_base;
+				}
+				else
+				{
+					a_int[k] = 3.0f * a_base;
+				}
+			}
+		}
+		// If top row
+		else if (k >= (ar_len-grdx))
+		{
+			// If top right (NorthEast) corner and red.
+			if ((k == (ar_len-1)) && turn == 0)
+			{
+				REAL *sp;
+				sp = new REAL[2];
+				sp = cornerSource(temps[0],temps[1], a_base);
+				a_ext[k] = sp[0];
+				a_int[k] = 2.0f * a_base + sp[1];
+				free(sp);
+			}
+			// If top left (NorthWest) corner and black.
+			else if ((k == (ar_len-grdx)) && turn == 1)
+			{
+				REAL *sp;
+				sp = new REAL[2];
+				sp = cornerSource(temps[0],temps[3], a_base);
+				a_ext[k] = sp[0];
+				a_int[k] = 2.0f * a_base + sp[1];
+				free(sp);
+			}
+		// Top row no corner.  The top row is the compliment of the bottom row so the operation for seq is reversed.
+			else
+			{
+				// Check North Boundary Condition.  If it's constant temperature:
+				if (temps[0]>0)
+				{
+					a_ext[k] = 2.0f * a_base * temps[0];
+					a_int[k] = 5.0f * a_base;
+				}
+				else
+				{
+					a_int[k]= 3.0f * a_base;
+				}
+			}
+		}
+		// Check side walls.  This is West when the matrix starts the row, that's when seq is -1.
+		else if (((k % grdx) == 0) && (((k/grdx + turn) % 2) == 0))
+		{
+			if (temps[3]>0)
+			{
+				a_ext[k] = 2.0f * a_base * temps[3];
+				a_int[k] = 5.0f * a_base;	
+			}
+			else
+			{				
+				a_int[k]= 3.0f * a_base;
+			}
+		
+		}
+		// This is East when the matrix ends the row.
+		else if (((k % (grdx-1)) == 0) && (((k/grdx + turn) % 2) == 1))
+		{
+			if (temps[1]>0)
+			{
+				a_ext[k] = 2.0f * a_base * temps[1];
+				a_int[k] = 5.0f * a_base;			
+			}
+			else
+			{				
+				a_int[k]= 3.0f * a_base;
+			}
+			//cout << "East: Turn: " << turn << " Interior: " << a_int[k] << " Exterior: " << a_ext[k] << " Modulo: " << k % grdx << " Row: " << k/grdx << endl;
+		}
+	// Every cell not on an edge or corner.
+		else
+		{
+			a_int[k] = 4.0f * a_base;
+		}
+	}
+}
+
+__global__ void differencingOperation(REAL *active_half, REAL *passive_half, REAL *a_e, REAL *a_i, REAL *ac, const int turn)
 {
 	int ind_x = blockIdx.x * blockDim.x + threadIdx.x;
 	int ind_y = blockIdx.y * blockDim.y + threadIdx.y;
 	int id = ind_x + ind_y * int(DIVISIONS*.5);
 	int grd;
 	grd = int(DIVISIONS*.5);
-	__shared__ int seq;
-
-    REAL d_coeff_p;
-    REAL *source = new REAL[2];
+	int seq;
 
 	// Negative seq means active half starts first.  Positive seq means passive half starts first.
+	// If it's one it's odd if it's 0 it's even.
 	if (((turn + ind_y) & 1) == 0)
 	{
 		seq = -1;
@@ -98,46 +220,26 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		seq = 1;
 	}
 
-
-	// If bottom row.
-	if (id < DIVISIONS*DIVISIONS*.5)
+	if (id<(grd*int(DIVISIONS)))
 	{
+	// If bottom row.
 	if (ind_y == 0)
 	{
 		// If bottom left (SouthWest) corner and red.
 		if (ind_x == 0 && turn == 0)
 		{
-			cornerSource(d_const[2],d_const[3], source, d_const[4]);
-			d_coeff_p = 2.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id+grd])+source[0])/d_coeff_p;
-
-
+			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id+grd])+a_e[id])/a_i[id];
 		}
 		// If bottom right (SouthEast) corner and black.
 		else if (ind_x == (grd-1) && turn == 1)
 		{
-
-			cornerSource(d_const[2],d_const[1], source, d_const[4]);
-			d_coeff_p = 2.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id+grd])+source[0])/d_coeff_p;
+			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id+grd])+a_e[id])/a_i[id];
 		}
 		// Bottom row no corner.
 		else
 		{
 			// Check South Boundary Condition.  If it's constant temperature:
-			if (d_const[2]>0)
-			{
-				source[0] = 2.0f * d_const[4] * d_const[2];
-				source[1] = 2.0f * d_const[4];
-				d_coeff_p = 3.0f * d_const[4] + source[1];
-				active_half[id] = (d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id+1])+source[0])/d_coeff_p;
-
-			}
-			else
-			{
-				d_coeff_p = 3.0f * d_const[4];
-				active_half[id] = d_const[4] * (passive_half[id]+passive_half[id+grd]+passive_half[id+1])/d_coeff_p;
-			}
+			active_half[id] = (ac[0]*(passive_half[id]+passive_half[id+grd]+passive_half[id+1])+a_e[id])/a_i[id];		
 		}
 	}
 	// If top row
@@ -146,94 +248,36 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		// If top right (NorthEast) corner and red.
 		if (ind_x == (grd-1) && turn == 0)
 		{
-
-			cornerSource(d_const[0],d_const[1], source, d_const[4]);
-			d_coeff_p = 2.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id-grd])+source[0])/d_coeff_p;
-
+			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id-grd])+a_e[id])/a_i[id];
 		}
 		// If top left (NorthWest) corner and black.
 		else if (ind_x == 0 && turn == 1)
 		{
-
-			cornerSource(d_const[0],d_const[3], source, d_const[4]);
-			d_coeff_p = 2.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id-grd])+source[0])/d_coeff_p;
-
-
+			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id-grd])+a_e[id])/a_i[id];
 		}
 		// Top row no corner.  The top row is the compliment of the bottom row so the operation for seq is reversed.
 		else
 		{
-
-			// Check North Boundary Condition.  If it's constant temperature:
-			if (d_const[0]>0)
-			{
-				source[0] = 2.0f * d_const[4] * d_const[0];
-				source[1] = 2.0f * d_const[4];
-				d_coeff_p = 3.0f * d_const[4] + source[1];
-				active_half[id] = (d_const[4]*(passive_half[id]+passive_half[id-grd]+passive_half[id+seq])+source[0])/d_coeff_p;
-			}
-			else
-			{
-				d_coeff_p = 3.0f * d_const[4];
-				active_half[id] = d_const[4]*(passive_half[id]+passive_half[id-grd]+passive_half[id+seq])/d_coeff_p;
-			}
+			active_half[id] = (ac[0]*(passive_half[id]+passive_half[id-grd]+passive_half[id+seq])+a_e[id])/a_i[id];
 		}
 	}
 	// Check side walls.  This is West when the matrix starts the row, that's when seq is -1.
 	else if (ind_x == 0 && seq == -1)
 	{
-		if (d_const[3]>0)
-		{
-
-			source[0] = 2.0f * d_const[4]*d_const[3];
-			source[1] = 2.0f * d_const[4];
-			d_coeff_p = 3.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id]+ passive_half[id+grd] + passive_half[id-grd])+source[0])/d_coeff_p;
-
-
-		}
-		else
-		{
-
-			d_coeff_p = 3.0f * d_const[4];
-			active_half[id] = d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id-grd])/d_coeff_p;
-
-
-
-		}
+		active_half[id] = (ac[0]*(passive_half[id]+ passive_half[id+grd] + passive_half[id-grd])+a_e[id])/a_i[id];
 	}
-
 	// This is East when the matrix ends the row.
 	else if (ind_x == (grd-1) && seq == 1)
 	{
-		if (d_const[1]>0)
-		{
-
-			source[0] = 2.0f * d_const[4]*d_const[1];
-			source[1] = 2.0f * d_const[4];
-			d_coeff_p = 3.0f * d_const[4] + source[1];
-			active_half[id] = (d_const[4]*(passive_half[id] + passive_half[id+grd] + passive_half[id-grd])+source[0])/d_coeff_p;
-		}
-		else
-		{
-			d_coeff_p = 3.0f * d_const[4];
-			active_half[id] = d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id-grd])/d_coeff_p;
-		}
+		active_half[id] = (ac[0]*(passive_half[id] + passive_half[id+grd] + passive_half[id-grd])+a_e[id])/a_i[id];
 	}
 	// Every cell not on an edge or corner.
 	else
 	{
-		d_coeff_p = 4.0f * d_const[4];
-		active_half[id] = d_const[4]*(passive_half[id]+passive_half[id+grd]+passive_half[id-grd]+passive_half[id+seq])/d_coeff_p;
+		active_half[id] = (passive_half[id]+passive_half[id+grd]+passive_half[id-grd]+passive_half[id+seq])*.25;
 	}
 	}
-	delete[] source;
-
 }
-
-
 
 int main()
 {
@@ -251,11 +295,9 @@ int main()
 		printf("Error: DIVISIONS must be a multiple of %.i.  That's twice the thread dimension.\n",(2*thread));
 		return 0;
 	}
-
-	int sz = int(DIVISIONS*DIVISIONS)/2;
+	const int sz = int(DIVISIONS*DIVISIONS)/2;
 	thrust::host_vector<REAL> red(sz);
 	thrust::host_vector<REAL> black(sz);
-	thrust::host_vector<REAL> temp_c(5);
 	REAL ds = (REAL)LENS/((REAL)(DIVISIONS-1));
     REAL A = (REAL)DZ * ds;
 	const int y_gr = (int)DIVISIONS/thread;
@@ -275,29 +317,76 @@ int main()
  //   // Get Guess for slab temperature
  //   cout << "Provide a guess Temperature for the slab in Kelvin:\n";
  //   cin >> temp_c[4];
+	REAL *ared_caste, *ablack_caste, *ared_casti, *ablack_casti, *a_b, *ahost_red_e, *ahost_black_e, *ahost_red_i, *ahost_black_i;
+
+	ahost_red_e = (REAL *) malloc(sz*sizeof(REAL));
+	ahost_black_e = (REAL *) malloc(sz*sizeof(REAL));
+	ahost_red_i = (REAL *) malloc(sz*sizeof(REAL));
+	ahost_black_i = (REAL *) malloc(sz*sizeof(REAL));
+
+	REAL ab[2] = {(REAL)TH_COND * A / ds, 0};
+	REAL temp_c[4];
 
 	// For debugging:
 	temp_c[0] = 500.;
 	temp_c[1] = -9.;
 	temp_c[2] = 800.;
 	temp_c[3] = -9.;
-	temp_c[4] = (REAL)TH_COND * A / ds;
 	REAL guess = 650.;
 
+	// I know that this can get confusing, but in the coefficients (variables starting with a), the e stands for external and the i stands for internal
+	// If it helps any, they're always built in the same order, externals first red before black.
+	// Set up host vectors and fill them with coefficients.
+	for (int k = 0; k<sz; k++)
+	{
+		ahost_red_e[k] = 0.f;
+		ahost_black_e[k] = 0.f;
+		ahost_red_i[k] = 0.f;
+		ahost_black_i[k] = 0.f;
+	}
+
+	coefficientFills(ahost_red_e, ahost_red_i, temp_c, ab[0], 0);
+	coefficientFills(ahost_black_e, ahost_black_i, temp_c, ab[0], 1);
+
+	//for (int k = 0; k<sz; k++)
+	//{
+	//	cout << ahost_red_i[k] << " ";
+
+	//	if ((k+1)%int(DIVISIONS*.5) == 0) 
+	//	{
+	//		cout << endl;
+	//	}
+
+	//}
+	
 	// Copy the Initial arrays to the GPU.
 	thrust::device_vector<REAL> d_red_i(sz,guess);
 	thrust::device_vector<REAL> d_red_f(sz,guess);
 	thrust::device_vector<REAL> d_black_i(sz,guess);
-	thrust::device_vector<REAL> d_black_f(sz,guess);
+	thrust::device_vector<REAL> d_black_f(sz,guess);	
+
+	// Copy coefficient vectors to device.
+	cudaMalloc((void **) &ared_caste, sizeof(REAL)*sz);
+	cudaMalloc((void **) &ablack_caste, sizeof(REAL)*sz);
+	cudaMalloc((void **) &ared_casti, sizeof(REAL)*sz);
+	cudaMalloc((void **) &ablack_casti, sizeof(REAL)*sz);
+	cudaMalloc((void **) &a_b, sizeof(REAL)*2);
+
+	// Fill the difference matrix to be reduced as well.
 	thrust::device_vector<REAL> diff_mat(sz);
-	thrust::device_vector<REAL> t_2 = temp_c;
 
-
-	REAL *d_const = thrust::raw_pointer_cast(&t_2[0]);
+	//Now make all the raw pointers so you can pass them to the kernel.
 	REAL *red_cast = thrust::raw_pointer_cast(&d_red_f[0]);
 	REAL *black_cast = thrust::raw_pointer_cast(&d_black_f[0]);
-//	REAL *red_casti = thrust::raw_pointer_cast(&d_red_i[0]);
-//	REAL *black_casti = thrust::raw_pointer_cast(&d_black_i[0]);
+	REAL *red_casti = thrust::raw_pointer_cast(&d_red_i[0]);
+	REAL *black_casti = thrust::raw_pointer_cast(&d_black_i[0]);
+
+	//The coefficients are vanilla CUDA/C++
+	cudaMemcpy(ared_caste, ahost_red_e, sizeof(REAL)*sz, cudaMemcpyHostToDevice);
+	cudaMemcpy(ablack_caste, ahost_black_e, sizeof(REAL)*sz, cudaMemcpyHostToDevice);
+	cudaMemcpy(ared_casti, ahost_red_i, sizeof(REAL)*sz, cudaMemcpyHostToDevice);
+	cudaMemcpy(ablack_casti, ahost_black_i, sizeof(REAL)*sz, cudaMemcpyHostToDevice);
+	cudaMemcpy(a_b, ab, sizeof(REAL)*2, cudaMemcpyHostToDevice);
 
 	dim3 grids(x_gr,y_gr);
 	dim3 threads(thread,thread);
@@ -308,11 +397,11 @@ int main()
 	while (stops)
 	{
 
-		differencingOperation <<< grids, threads >>> (red_cast, black_cast, d_const, 0);
+		differencingOperation <<< grids, threads >>> (red_cast, black_cast, ared_caste, ared_casti, a_b, 0);
 
 		cudaDeviceSynchronize();
 
-		differencingOperation <<< grids, threads >>> (black_cast, red_cast, d_const, 1);
+		differencingOperation <<< grids, threads >>> (black_cast, red_cast, ablack_caste, ablack_casti, a_b, 1);
 
 		cudaDeviceSynchronize();
 
@@ -334,26 +423,21 @@ int main()
 
 		//d_red_i = d_red_f;
 
-		//cudaMemcpy(red_casti, red_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
-		thrust::copy(d_red_f.begin(), d_red_f.end(), d_red_i.begin());
+		cudaMemcpy(red_casti, red_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
+		//thrust::copy(d_red_f.begin(), d_red_f.end(), d_red_i.begin());
 
 		//d_black_i = d_black_f;
 
-		//cudaMemcpy(black_casti, black_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
-		thrust::copy(d_black_f.begin(), d_black_f.end(), d_black_i.begin());
+		cudaMemcpy(black_casti, black_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
+		//thrust::copy(d_black_f.begin(), d_black_f.end(), d_black_i.begin());
 
 		cudaDeviceSynchronize();
-		if (iter%100 == 0) cout << "Iteration: " << iter << "dm:" << dm2/REAL(sz*2) << endl;
-		//Just to be super obnoxious.
-		//ofstream filewrite;
-		//filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.dat", ios::trunc);
-		//
-  //      for (int n = 0; n < (sz); n++)
-  //      {
-  //          filewrite << "\n" << d_red_f[n] << "\n" << d_black_i[n];
-  //      }
-		//filewrite.close();
-
+		if (iter%100 == 0) 
+		{
+			cout << "Iteration: " << iter << "  dm:" << dm2/REAL(sz*2) << endl;
+			cout << "First red: " << d_red_f[0] << "  Last Black:" << d_black_f[sz-1] << endl;
+			cout << "Initial red: " << d_red_i[250] << "  Iniital Black:" << d_black_i[15000] << endl;
+		}
 	}
 
     double wall1 = clock();
@@ -363,19 +447,35 @@ int main()
 
 	printf("It converged after %d iterations: \n",iter);
 
+	cout << "That took: " << timed << " seconds" << endl;
+
+	//Thrust copy only works on Linux.
+	thrust::copy(d_red_f.begin(), d_red_f.end(), red.begin());
+
+	thrust::copy(d_black_f.begin(), d_black_f.end(), black.begin());
+
 	// Write it out!
-	/*ofstream filewrite;
+
+	ofstream filewrite;
 	filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.dat", ios::trunc);
 	filewrite << DIVISIONS << "\n" << ds;
-    for (int k = 0; k < x_dim; k++)
+
+    for (int k = 0; k < sz; k++)
     {
-        for (int n = 0; n < DIVISIONS; n++)
-        {
-            filewrite << "\n" << red[k][n] << "\n" << black[k][n];
-        }
-    }*/
+         filewrite << "\n" << red[k] << "\n" << black[k];
+    }
 
-    // filewrite.close();
+    filewrite.close();
 
+	cudaFree(ared_caste);
+	cudaFree(ared_casti);
+	cudaFree(ablack_caste);
+	cudaFree(ablack_casti);
+	cudaFree(a_b);
+	free(ared_caste);
+	free(ared_casti);
+	free(ablack_caste);
+	free(ablack_casti);
+	free(a_b);
     return 0;
 }
