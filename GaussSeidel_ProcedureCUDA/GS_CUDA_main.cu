@@ -27,11 +27,11 @@
 using namespace std;
 
 // Now the plate must be square.  #Divisions should be some multiple of 32, preferably some 2^x.
-#define LENS       5.
-#define TH_COND   16.
-#define DZ        .01
-#define DIVISIONS 256.
-#define TOLERANCE 1.e-2
+#define LENS       1.
+#define TH_COND    16.
+#define DZ         .01
+#define DIVISIONS  512.
+#define TOLERANCE  1.e-5
 #define REAL float
 
 struct absdiff
@@ -80,7 +80,7 @@ REAL *cornerSource(REAL BC1, REAL BC2, REAL coff)
 
 void coefficientFills(REAL *a_ext, REAL *a_int, REAL *temps, REAL a_base, const int turn)
 {
-	const int grdx = int(DIVISIONS/2);
+	const int grdx = int(DIVISIONS)/2;
 	const int ar_len = int(grdx*DIVISIONS);
 
 	//Well at least we get to call this with omp.
@@ -165,7 +165,7 @@ void coefficientFills(REAL *a_ext, REAL *a_int, REAL *temps, REAL a_base, const 
 			}
 		}
 		// Check side walls.  This is West when the matrix starts the row, that's when seq is -1.
-		else if (((k % grdx) == 0) && (((k/grdx + turn) % 2) == 0))
+		else if (((k % grdx)== 0) && (((k/grdx + turn) & 1) == 0))
 		{
 			if (temps[3]>0)
 			{
@@ -179,7 +179,7 @@ void coefficientFills(REAL *a_ext, REAL *a_int, REAL *temps, REAL a_base, const 
 		
 		}
 		// This is East when the matrix ends the row.
-		else if (((k % (grdx-1)) == 0) && (((k/grdx + turn) % 2) == 1))
+		else if (((k % (grdx)) == (grdx-1)) && (((k/grdx + turn) & 1)))
 		{
 			if (temps[1]>0)
 			{
@@ -198,27 +198,19 @@ void coefficientFills(REAL *a_ext, REAL *a_int, REAL *temps, REAL a_base, const 
 			a_int[k] = 4.0f * a_base;
 		}
 	}
+	
 }
 
 __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REAL *a_e, REAL *a_i, REAL *ac, const int turn)
-{
+{	
+	const int grd = int(DIVISIONS)/2;
 	int ind_x = blockIdx.x * blockDim.x + threadIdx.x;
 	int ind_y = blockIdx.y * blockDim.y + threadIdx.y;
-	int id = ind_x + ind_y * int(DIVISIONS*.5);
-	int grd;
-	grd = int(DIVISIONS*.5);
-	int seq;
+	int id = ind_x + ind_y * grd;
 
 	// Negative seq means active half starts first.  Positive seq means passive half starts first.
 	// If it's one it's odd if it's 0 it's even.
-	if (((turn + ind_y) & 1) == 0)
-	{
-		seq = -1;
-	}
-	else
-	{
-		seq = 1;
-	}
+	int seq = ((turn + ind_y) & 1) ? 1:-1;
 
 	if (id<(grd*int(DIVISIONS)))
 	{
@@ -229,19 +221,22 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 		if (ind_x == 0 && turn == 0)
 		{
 			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id+grd])+a_e[id])/a_i[id];
+			
 		}
 		// If bottom right (SouthEast) corner and black.
 		else if (ind_x == (grd-1) && turn == 1)
 		{
 			active_half[id] = (ac[0]*(passive_half[id] + passive_half[id+grd])+a_e[id])/a_i[id];
+			
 		}
 		// Bottom row no corner.
 		else
 		{
-			// Check South Boundary Condition.  If it's constant temperature:
-			active_half[id] = (ac[0]*(passive_half[id]+passive_half[id+grd]+passive_half[id+1])+a_e[id])/a_i[id];		
+			active_half[id] = (ac[0]*(passive_half[id]+passive_half[id+grd]+passive_half[id+seq])+a_e[id])/a_i[id];		
+			
 		}
 	}
+
 	// If top row
 	else if (ind_y == (int(DIVISIONS)-1))
 	{
@@ -274,7 +269,7 @@ __global__ void differencingOperation(REAL *active_half, REAL *passive_half, REA
 	// Every cell not on an edge or corner.
 	else
 	{
-		active_half[id] = (passive_half[id]+passive_half[id+grd]+passive_half[id-grd]+passive_half[id+seq])*.25;
+		active_half[id] = (ac[0]/a_i[id]) * (passive_half[id]+passive_half[id+grd]+passive_half[id-grd]+passive_half[id+seq]);
 	}
 	}
 }
@@ -289,13 +284,17 @@ int main()
 	int mt = prop.maxThreadsPerBlock;
 	int thread = int(sqrtf(float(mt)));
 
-
 	if (int(DIVISIONS)%(2*thread) != 0)
 	{
 		printf("Error: DIVISIONS must be a multiple of %.i.  That's twice the thread dimension.\n",(2*thread));
 		return 0;
 	}
-	const int sz = int(DIVISIONS*DIVISIONS)/2;
+
+	const int rw = int(DIVISIONS)/2;
+	const int sz = rw*int(DIVISIONS);
+	
+	cout << "Begin!!! \n\n";
+
 	thrust::host_vector<REAL> red(sz);
 	thrust::host_vector<REAL> black(sz);
 	REAL ds = (REAL)LENS/((REAL)(DIVISIONS-1));
@@ -317,6 +316,7 @@ int main()
  //   // Get Guess for slab temperature
  //   cout << "Provide a guess Temperature for the slab in Kelvin:\n";
  //   cin >> temp_c[4];
+
 	REAL *ared_caste, *ablack_caste, *ared_casti, *ablack_casti, *a_b, *ahost_red_e, *ahost_black_e, *ahost_red_i, *ahost_black_i;
 
 	ahost_red_e = (REAL *) malloc(sz*sizeof(REAL));
@@ -328,11 +328,11 @@ int main()
 	REAL temp_c[4];
 
 	// For debugging:
-	temp_c[0] = 500.;
-	temp_c[1] = -9.;
-	temp_c[2] = 800.;
-	temp_c[3] = -9.;
-	REAL guess = 650.;
+	temp_c[0] = 2.;
+	temp_c[1] = 1.;
+	temp_c[2] = 1.;
+	temp_c[3] = 1.;
+	REAL guess = .5;
 
 	// I know that this can get confusing, but in the coefficients (variables starting with a), the e stands for external and the i stands for internal
 	// If it helps any, they're always built in the same order, externals first red before black.
@@ -348,17 +348,7 @@ int main()
 	coefficientFills(ahost_red_e, ahost_red_i, temp_c, ab[0], 0);
 	coefficientFills(ahost_black_e, ahost_black_i, temp_c, ab[0], 1);
 
-	//for (int k = 0; k<sz; k++)
-	//{
-	//	cout << ahost_red_i[k] << " ";
 
-	//	if ((k+1)%int(DIVISIONS*.5) == 0) 
-	//	{
-	//		cout << endl;
-	//	}
-
-	//}
-	
 	// Copy the Initial arrays to the GPU.
 	thrust::device_vector<REAL> d_red_i(sz,guess);
 	thrust::device_vector<REAL> d_red_f(sz,guess);
@@ -420,7 +410,7 @@ int main()
 		{
 			stops = false;
 		}
-
+		 
 		//d_red_i = d_red_f;
 
 		cudaMemcpy(red_casti, red_cast, sz * sizeof(REAL), cudaMemcpyDeviceToDevice);
@@ -432,11 +422,11 @@ int main()
 		//thrust::copy(d_black_f.begin(), d_black_f.end(), d_black_i.begin());
 
 		cudaDeviceSynchronize();
-		if (iter%100 == 0) 
+		if (iter%200 == 0) 
 		{
 			cout << "Iteration: " << iter << "  dm:" << dm2/REAL(sz*2) << endl;
 			cout << "First red: " << d_red_f[0] << "  Last Black:" << d_black_f[sz-1] << endl;
-			cout << "Initial red: " << d_red_i[250] << "  Iniital Black:" << d_black_i[15000] << endl;
+			cout << "Random red: " << d_red_i[8201] << "  Random Black:" << d_black_i[105] << endl;
 		}
 	}
 
@@ -449,13 +439,11 @@ int main()
 
 	cout << "That took: " << timed << " seconds" << endl;
 
-	//Thrust copy only works on Linux.
 	thrust::copy(d_red_f.begin(), d_red_f.end(), red.begin());
 
 	thrust::copy(d_black_f.begin(), d_black_f.end(), black.begin());
 
 	// Write it out!
-
 	ofstream filewrite;
 	filewrite.open("C:\\Users\\Philadelphia\\Documents\\1_SweptTimeResearch\\GaussSeidel\\GaussSeidelCUDA\\GS_outputCUDA.dat", ios::trunc);
 	filewrite << DIVISIONS << "\n" << ds;
@@ -477,5 +465,7 @@ int main()
 	free(ablack_caste);
 	free(ablack_casti);
 	free(a_b);
+	//cudaDeviceReset();
     return 0;
+
 }
